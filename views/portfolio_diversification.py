@@ -16,7 +16,8 @@ FACTOR_HELP = {
     "Currencies": "How many currencies your holdings are priced in.",
     "Correlation": "How differently your holdings move day to day over the past year (lower is better).",
 }
-LEVEL = {"warning": (st.warning, "⚠️"), "info": (st.info, "💡"), "success": (st.success, "✅")}
+LEVEL = {"warning": (st.warning, ":material/warning:"), "info": (st.info, ":material/lightbulb:"),
+         "success": (st.success, ":material/check_circle:")}
 
 
 def render(pf: dict, vals: pd.DataFrame) -> None:

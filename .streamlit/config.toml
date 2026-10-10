@@ -1,0 +1,6 @@
+[client]
+# hide the developer toolbar ("Deploy", main menu) - this is a personal app, not a deployed one
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

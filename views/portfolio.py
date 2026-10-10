@@ -1,5 +1,5 @@
 """Your portfolio: overview, holdings (edit/remove) and adding positions."""
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -8,15 +8,15 @@ import streamlit as st
 from analyser import data
 from analyser import portfolio as pfm
 from views import portfolio_diversification, portfolio_import
-from views.common import TILE, TYPE_ICONS, go_analyse, hbar, primary_color, tiles
+from views.common import TILE, go_analyse, hbar, primary_color, tiles, when
 
 GREEN, RED = "#22c55e", "#ef4444"
-OVERVIEW, HOLDINGS, DIVERSIFICATION, ADD = "📊 Overview", "📋 Holdings", "🎯 Diversification", "➕ Add position"
+OVERVIEW, HOLDINGS, DIVERSIFICATION, ADD = "Overview", "Holdings", "Diversification", "Add position"
 VIEWS = [OVERVIEW, HOLDINGS, DIVERSIFICATION, ADD]
-KINDS = ["Stock / ETF / Crypto", "Physical gold / silver", "📸 Import from screenshot"]
-MODES = {"date": "📅 I know the date I bought it",
-         "today": "🟢 Start tracking from today",
-         "price": "💲 I know the price I paid — help me find the date"}
+KINDS = ["Stock / ETF / Crypto", "Physical gold / silver", "Import from screenshot"]
+MODES = {"date": "I know the date I bought it",
+         "today": "Start tracking from today",
+         "price": "I know the price I paid — help me find the date"}
 
 pf = pfm.load()
 today = date.today()
@@ -52,7 +52,7 @@ def reset_add_form():
 
 # ---------- header ----------
 h1, h2 = st.columns([3, 1], vertical_alignment="bottom")
-h1.title("💼 Your portfolio")
+h1.title("Portfolio")
 base = h2.selectbox("Currency", pfm.BASE_CURRENCIES,
                     index=pfm.BASE_CURRENCIES.index(pf["base_currency"]), key="pf_base")
 if base != pf["base_currency"]:
@@ -67,8 +67,13 @@ vals = pd.DataFrame()
 if pf["holdings"]:
     with st.spinner("Fetching latest prices..."):
         vals = pfm.value(pf["holdings"], base)
-    total, cost = vals["Value"].sum(), vals["Cost"].sum()
-    day = vals["Day change"].sum()
+
+
+@st.fragment(run_every="60s")
+def summary_tiles():
+    """Headline numbers - re-valued every minute so open markets stay live."""
+    v = pfm.value(pf["holdings"], base)
+    total, cost, day = v["Value"].sum(), v["Cost"].sum(), v["Day change"].sum()
     with tiles():
         st.metric("Total value", pfm.money(total, base, None), border=True, width=TILE)
         st.metric("Invested", pfm.money(cost, base, None), border=True, width=TILE)
@@ -76,8 +81,16 @@ if pf["holdings"]:
                   f"{(total / cost - 1) * 100:+.2f}%" if cost else None, border=True, width=TILE)
         st.metric("Today", pfm.money(day, base, None),
                   f"{day / (total - day) * 100:+.2f}%" if total - day else None, border=True, width=TILE)
-    if vals["Value"].isna().any():
-        st.warning("No price data for: " + ", ".join(vals.loc[vals["Value"].isna(), "Ticker"]))
+    live = int(v["Live"].sum())
+    st.caption(f"Prices as of {when(datetime.now().astimezone())} (your time), refreshed every minute · "
+               f"{live} of {len(v)} holdings' markets open now"
+               + ("" if live else " - showing last closing prices"))
+    if v["Value"].isna().any():
+        st.warning("No price data for: " + ", ".join(v.loc[v["Value"].isna(), "Ticker"]))
+
+
+if pf["holdings"]:
+    summary_tiles()
 
 view = st.segmented_control("View", VIEWS, key="pf_view", required=True, label_visibility="collapsed")
 
@@ -117,7 +130,6 @@ def overview():
     with c1:
         st.subheader("By asset type")
         by_type = live.groupby("Type")["Value"].sum() / total_v * 100
-        by_type.index = [f"{TYPE_ICONS.get(t, '')} {t}" for t in by_type.index]
         st.plotly_chart(hbar(by_type, "{:.1f}%"), width="stretch")
     with c2:
         st.subheader("By holding")
@@ -143,7 +155,7 @@ def holdings():
     disp = pd.DataFrame({
         "Ticker": vals["Ticker"],
         "Name": vals["Name"],
-        "Type": [f"{TYPE_ICONS.get(t, '')} {t}" for t in vals["Type"]],
+        "Type": vals["Type"],
         "Quantity": [f"{fmt_qty(q)} {u if u not in ('units', 'shares') else ''}".strip()
                      for q, u in zip(vals["Quantity"], vals["Unit"])],
         "Buy price": [f"{p:,.2f} {c}" for p, c in zip(vals["Buy price"], vals["Cost currency"])],
@@ -154,6 +166,8 @@ def holdings():
         "P/L %": vals["P/L %"],
         "Today": vals["Day change"],
         "Bought": [d.strftime("%d %b %Y") if d else "Unknown" for d in vals["Bought"]],
+        "Updated": [("Live · " if live else "Closed · ") + when(t) if pd.notna(t) else "—"
+                    for live, t in zip(vals["Live"], vals["As of"])],
         "Ann. %": vals["Ann. %"],
     })
     money_cols = [f"Value ({base})", f"Cost ({base})", "P/L", "Today"]
@@ -174,7 +188,7 @@ def holdings():
     uf = pfm.UNITS.get(h.get("display_unit"), 1.0) if is_metal else 1.0
     k = h["id"]
     with st.container(border=True):
-        st.markdown(f"#### ✏️ {h['name']}" + ("" if is_metal else f" ({h['ticker']})"))
+        st.markdown(f"#### {h['name']}" + ("" if is_metal else f" ({h['ticker']})"))
         c1, c2, c3 = st.columns(3)
         qty = c1.number_input(f"Quantity ({h['display_unit']})", min_value=0.0, value=float(h["quantity"] / uf),
                               format="%g", key=f"ed_q_{k}")
@@ -186,23 +200,23 @@ def holdings():
                           max_value=today, disabled=not known, format="DD/MM/YYYY", key=f"ed_d_{k}")
         notes = st.text_input("Notes", h.get("notes", ""), key=f"ed_n_{k}")
         b1, b2, b3, _ = st.columns([1, 1, 1.3, 3])
-        if b1.button("💾 Save", type="primary", key=f"ed_s_{k}"):
+        if b1.button("Save", type="primary", key=f"ed_s_{k}"):
             if qty <= 0:
                 st.error("Quantity must be more than zero.")
             else:
                 h.update(quantity=qty * uf, price=price / uf, date=d.isoformat() if known else None, notes=notes)
                 pfm.save(pf)
-                st.toast("Saved", icon="✅")
+                st.toast("Saved", icon=":material/check_circle:")
                 st.rerun()
-        with b2.popover("🗑️ Remove"):
+        with b2.popover("Remove"):
             st.write(f"Remove **{h['ticker']}** from your portfolio?")
             if st.button("Yes, remove", type="primary", key=f"ed_x_{k}"):
                 pf["holdings"] = [x for x in pf["holdings"] if x["id"] != k]
                 pfm.save(pf)
-                st.toast(f"Removed {h['ticker']}", icon="🗑️")
+                st.toast(f"Removed {h['ticker']}", icon=":material/delete:")
                 st.rerun()
         if not is_metal:
-            b3.button("📊 Analyse", key=f"ed_a_{k}", on_click=go_analyse, args=(h["ticker"],))
+            b3.button("Analyse", key=f"ed_a_{k}", on_click=go_analyse, args=(h["ticker"],))
 
 
 # ---------- Add position ----------
@@ -319,18 +333,18 @@ def add_position():
             line += (f", worth **{pfm.money(pv['Value'], base)}** today "
                      f"(:{'green' if pv['P/L'] >= 0 else 'red'}[{pv['P/L %']:+.2f}%])")
         st.info(line)
-        if st.button("＋ Add to portfolio", type="primary", key="add_go"):
+        if st.button("Add to portfolio", icon=":material/add:", type="primary", key="add_go"):
             pf["holdings"].append(h)
             pfm.save(pf)
             reset_add_form()
             st.session_state.pf_view_request = OVERVIEW
-            st.toast(f"Added {name if is_metal else ticker} to your portfolio", icon="✅")
+            st.toast(f"Added {name if is_metal else ticker} to your portfolio", icon=":material/check_circle:")
             st.rerun()
 
 
 def when_did_you_buy(ticker, ppu, price_ccy, market_ccy, uf, per):
     """Ask when a purchase at `ppu` happened, suggesting periods when it traded at that price."""
-    st.markdown("**📆 When did you buy it?**")
+    st.markdown("**When did you buy it?**")
     with st.spinner("Looking for when it traded at that price..."):
         sug = pfm.suggest_dates(ticker, ppu, price_ccy, market_ccy, uf)
     if sug["periods"]:
@@ -344,7 +358,7 @@ def when_did_you_buy(ticker, ppu, price_ccy, market_ccy, uf, per):
                    f"(range {sug['min']:,.2f}–{sug['max']:,.2f}). The closest close was {cpx:,.2f} on "
                    f"{cd:%d %b %Y}. Pick the date yourself, or choose 'I don't remember'.")
     options = [("period", p) for p in sug["periods"]] + [("pick", None), ("unknown", None)]
-    labels = {"pick": "🗓️ I'll pick the date myself", "unknown": "🤷 I don't remember"}
+    labels = {"pick": "I'll pick the date myself", "unknown": "I don't remember"}
     choice = st.radio("When", range(len(options)), label_visibility="collapsed", key=f"add_when_{ticker}_{ppu}",
                       format_func=lambda i: labels.get(options[i][0]) or
                       f"{fmt_period(options[i][1])}  ·  traded {options[i][1]['low']:,.2f} – "

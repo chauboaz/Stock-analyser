@@ -8,6 +8,7 @@ A holding is a plain dict saved to user_data/portfolio.json:
 import json
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -85,9 +86,22 @@ def _split_factor(df: pd.DataFrame, d: date | None) -> float:
 
 
 # ---------- valuation ----------
+def _prefetch(calls) -> None:
+    """Run network-bound lookups in parallel so the cached functions are warm before the (cheap)
+    sequential maths below. Each holding needs several Yahoo requests; one at a time took ~30 s."""
+    with ThreadPoolExecutor(8) as ex:
+        list(ex.map(lambda c: c[0](*c[1:]), calls))
+
+
 def value(holdings: list[dict], base: str) -> pd.DataFrame:
     """One row per holding with current value, cost and P/L in the base currency."""
     today = date.today()
+    calls = []
+    for h in holdings:
+        d = _date(h)
+        calls += [(_market_df, h, d or today - timedelta(days=10)), (data.get_quote, h["ticker"]),
+                  (data.fx_rate, h["cost_currency"], base, d), (data.fx_rate, h["currency"], base)]
+    _prefetch(calls)
     rows = []
     for h in holdings:
         d = _date(h)
@@ -104,10 +118,15 @@ def value(holdings: list[dict], base: str) -> pd.DataFrame:
         row["Cost"] = cost
         if df.empty:
             row.update({"Price": np.nan, "Value": np.nan, "P/L": np.nan, "P/L %": np.nan,
-                        "Day change": np.nan, "Days held": np.nan, "Ann. %": np.nan})
+                        "Day change": np.nan, "Days held": np.nan, "Ann. %": np.nan, "As of": pd.NaT,
+                        "Live": False})
             rows.append(row)
             continue
         cur, prev = df["Close"].iloc[-1], df["Close"].iloc[-2] if len(df) > 1 else df["Close"].iloc[-1]
+        q = data.get_quote(h["ticker"])       # fresher (1-minute cache) than the daily history
+        if q:
+            cur, prev = q["price"], q["prev"]
+        row.update({"As of": q["as_of"] if q else df.index[-1].tz_localize("UTC"), "Live": bool(q and q["live"])})
         qty_now = h["quantity"] * _split_factor(df, d)
         fx_now = data.fx_rate(h["currency"], base)
         val = qty_now * cur * fx_now
@@ -135,6 +154,8 @@ def history(holdings: list[dict], base: str) -> pd.DataFrame:
     if not dated:
         return pd.DataFrame()
     start = min(_date(h) for h in dated)
+    _prefetch([c for h in dated for c in ((_market_df, h, _date(h)), (data.fx_series, h["currency"], base, start),
+                                           (data.fx_rate, h["cost_currency"], base, _date(h)))])
     idx = pd.date_range(start, date.today(), freq="D")
     values, invested = {}, pd.Series(0.0, index=idx)
     for h in dated:

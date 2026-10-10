@@ -6,7 +6,10 @@ from plotly.subplots import make_subplots
 
 from analyser import backtest as bt
 from analyser import data, fundamentals, indicators
-from views.common import SMALL_TILE, TYPE_ICONS, go_add, search_box, tiles
+from analyser import news
+from analyser import signals as sg
+from views.common import SIGNALS, SMALL_TILE, TILE, go_add, news_list, search_box, status, tiles, when
+from views.signals_ui import check_cards, effective_weights, load_config, signal_chart
 
 ticker = st.session_state.setdefault("ticker", "AAPL")
 
@@ -15,20 +18,22 @@ search_box("analyse_q", placeholder="Search another stock, ETF or crypto...")
 meta = data.get_meta(ticker)
 quote = data.get_quote(ticker)
 st.title(meta["name"])
-st.caption(f"{TYPE_ICONS.get(meta['type'], '•')} **{ticker}** · {meta['type']} · {meta['exchange']} · "
+st.caption(f"**{ticker}** · {meta['type']} · {meta['exchange']} · "
            f"{meta['currency']}")
 with tiles(vertical_alignment="center"):
     if quote:
-        st.metric("Last price", f"{quote['price']:,.2f} {meta['currency']}", f"{quote['change_pct']:+.2f}%",
+        st.metric(f"Last price &nbsp; {status(quote)}", f"{quote['price']:,.2f} {meta['currency']}",
+                  f"{quote['change_pct']:+.2f}%", delta_description=f"as of {when(quote['as_of'])}",
                   width="content")
-    st.button("＋ Add to portfolio", type="primary", on_click=go_add,
+    st.button("Add to portfolio", icon=":material/add:", type="primary", on_click=go_add,
               args=({"symbol": ticker, "name": meta["name"], "type": meta["type"], "exchange": meta["exchange"]},))
 
 period = st.segmented_control("History", ["6mo", "1y", "2y", "5y", "10y", "max"], default="2y",
                               key="an_period") or "2y"
 ppy = 365 if meta["type"] == "Crypto" else 252
 
-tab_chart, tab_bt, tab_fund = st.tabs(["📊 Chart & Indicators", "🧪 Backtest", "🏢 Fundamentals"])
+tab_chart, tab_sig, tab_news, tab_bt, tab_fund = st.tabs(["Chart & indicators", "Signals", "News", "Backtest",
+                                                         "Fundamentals"])
 
 # ---------- Chart & Indicators ----------
 with tab_chart:
@@ -91,6 +96,37 @@ with tab_chart:
         st.subheader("Signal summary")
         st.dataframe(pd.DataFrame(indicators.signal_summary(d), columns=["Indicator", "Reading", "Bias"]),
                      hide_index=True, width="stretch")
+
+# ---------- Signals ----------
+with tab_sig:
+    cfg = load_config()
+    with st.spinner("Running signal checks..."):
+        res = sg.run_checks(ticker, cfg["params"])
+    if "error" in res:
+        st.info(f"Signals unavailable for {ticker}: {res['error']}.")
+    else:
+        comp = sg.composite(res, effective_weights(cfg))
+        with tiles(vertical_alignment="center"):
+            st.metric("Signal score", f"{comp['score']:+.0f}", help="−100 strong sell … +100 strong buy",
+                      border=True, width=TILE)
+            st.metric("Verdict", comp["verdict"], border=True, width=TILE)
+        st.caption("Uses the indicator switches, weights and settings from the Signals page.")
+        st.page_link(SIGNALS, label="Change indicators", icon=":material/tune:")
+        st.plotly_chart(signal_chart(data.get_history(ticker, "5y"), res), width="stretch")
+        st.caption("Weekly candles · orange = EMA200 · green / red bands = unfilled gap-up / gap-down zones · "
+                   "grey bands = strongest support zones (×touches).")
+        check_cards(res, cfg)
+        gaps = res["checks"]["gaps"].get("gaps")
+        if gaps is not None and not gaps.empty:
+            with st.expander(f"All {len(gaps)} gaps found"):
+                st.dataframe(gaps.sort_values("date", ascending=False), hide_index=True, width="stretch",
+                             column_config={"size_pct": st.column_config.NumberColumn("size %", format="%.1f")})
+        st.caption("Rule-based signals for research, not financial advice.")
+
+# ---------- News ----------
+with tab_news:
+    with st.spinner("Fetching headlines..."):
+        news_list(news.ticker_news(ticker, count=15), highlight={ticker})
 
 # ---------- Backtest ----------
 with tab_bt:

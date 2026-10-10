@@ -18,25 +18,52 @@ QUOTE_TYPES = {"EQUITY": "Stock", "ETF": "ETF", "CRYPTOCURRENCY": "Crypto", "MUT
 MINOR_CURRENCIES = {"GBp": "GBP", "GBX": "GBP", "ILA": "ILS", "ZAc": "ZAR"}
 
 
-def ttl_cache(seconds: int):
-    """Tiny thread-safe time-based cache. Empty results are not cached so network blips retry."""
+def ttl_cache(seconds: int, max_stale: int | None = None):
+    """Thread-safe time-based cache with stale-while-revalidate.
+
+    Fresh for `seconds`. After that, and up to `max_stale` seconds old (default 4x `seconds`), the old
+    value is returned immediately while a background thread fetches a new one - so pages never wait
+    on a refresh, only on the very first load. Empty results are not cached so network blips retry.
+    """
+    max_stale = max_stale if max_stale is not None else seconds * 4
+
     def deco(fn):
-        store, lock = {}, threading.Lock()
+        store, lock, refreshing = {}, threading.Lock(), set()
+
+        def fetch(key, args, kwargs):
+            val = fn(*args, **kwargs)
+            empty = val is None or getattr(val, "empty", False) or (isinstance(val, (list, dict)) and not val)
+            if not empty:
+                with lock:
+                    store[key] = (time.time(), val)
+            return val
+
+        def refresh(key, args, kwargs):
+            try:
+                fetch(key, args, kwargs)
+            except Exception:
+                pass                                  # keep serving the stale value
+            finally:
+                with lock:
+                    refreshing.discard(key)
 
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             key = (args, tuple(sorted(kwargs.items())))
             with lock:
                 hit = store.get(key)
-            if hit and time.time() - hit[0] < seconds:
+            age = time.time() - hit[0] if hit else None
+            if hit and age < seconds:
                 val = hit[1]
+            elif hit and age < max_stale:
+                val = hit[1]
+                with lock:
+                    start = key not in refreshing
+                    refreshing.add(key)
+                if start:
+                    threading.Thread(target=refresh, args=(key, args, kwargs), daemon=True).start()
             else:
-                val = fn(*args, **kwargs)
-                empty = (val is None or getattr(val, "empty", False)
-                         or (isinstance(val, (list, dict)) and not val))
-                if not empty:
-                    with lock:
-                        store[key] = (time.time(), val)
+                val = fetch(key, args, kwargs)
             return val.copy() if hasattr(val, "copy") else val
 
         wrapper.cache_clear = store.clear
@@ -53,7 +80,7 @@ def normalise_ticker(ticker: str, market: str = "US") -> str:
     return ticker
 
 
-@ttl_cache(900)
+@ttl_cache(3600)          # daily bars; the live price comes from get_quote
 def get_history(ticker: str, period: str | None = "2y", interval: str = "1d",
                 start: str | None = None, auto_adjust: bool = True) -> pd.DataFrame:
     """OHLCV history with a timezone-naive DatetimeIndex. Empty frame if not found.
@@ -77,7 +104,7 @@ def get_history(ticker: str, period: str | None = "2y", interval: str = "1d",
     return df[cols].dropna(subset=["Close"])
 
 
-@ttl_cache(3600)
+@ttl_cache(3600 * 6)      # company profile / fundamentals barely change intraday
 def get_info(ticker: str) -> dict:
     """Company/asset info dict from Yahoo (fundamentals, sector, etc.)."""
     try:
@@ -162,16 +189,48 @@ def get_meta(ticker: str) -> dict:
     }
 
 
+LIVE_WINDOW = pd.Timedelta(minutes=30)   # a trade this recent during trading hours counts as live
+
+
+@ttl_cache(60)
 def get_quote(ticker: str) -> dict | None:
-    """Latest price, previous close and a 1-month sparkline (major-unit currency)."""
-    df = get_history(ticker, period="1mo", auto_adjust=False)
+    """Latest price plus when it's from and whether the market is trading now.
+
+    Returns {price, prev, change_pct, spark, as_of (tz-aware Timestamp), live (bool), delay (minutes)}
+    in the major-unit currency.
+    """
+    t = yf.Ticker(ticker)
+    try:
+        df = t.history(period="1mo", auto_adjust=False)
+        meta = t.history_metadata or {}
+    except Exception:
+        return None
+    df = df.dropna(subset=["Close"]) if not df.empty else df
     if df.empty:
         return None
     div = get_currency(ticker)[1]
-    c = df["Close"] / div
-    prev = c.iloc[-2] if len(c) > 1 else c.iloc[-1]
-    return {"price": c.iloc[-1], "prev": prev, "change_pct": (c.iloc[-1] / prev - 1) * 100,
-            "spark": c.round(4).tolist()}
+    closes = df["Close"] / div
+    price = (meta.get("regularMarketPrice") or closes.iloc[-1] * div) / div
+    as_of = pd.Timestamp(meta.get("regularMarketTime") or df.index[-1])
+    if as_of.tzinfo is None:
+        as_of = as_of.tz_localize("UTC")
+    # previous close = last daily bar before the one the latest price belongs to
+    latest_day = as_of.tz_convert(df.index.tz).date() if df.index.tz else as_of.date()
+    prior = closes[[d.date() < latest_day for d in df.index]]
+    prev = prior.iloc[-1] if not prior.empty else closes.iloc[0]
+
+    now = pd.Timestamp.now(tz="UTC")
+    regular = (meta.get("currentTradingPeriod") or {}).get("regular") or {}
+    start, end = regular.get("start"), regular.get("end")
+    in_hours = start is not None and end is not None and pd.Timestamp(start) <= now <= pd.Timestamp(end)
+    # Yahoo's usual data delays: crypto & FX real-time, futures 10 min, exchange-listed shares 15 min
+    delay = {"CRYPTOCURRENCY": 0, "CURRENCY": 0, "FUTURE": 10}.get(meta.get("instrumentType"), 15)
+    live = bool(in_hours and now - as_of <= LIVE_WINDOW + pd.Timedelta(minutes=delay))
+
+    spark = closes.round(4).tolist()
+    spark[-1] = round(float(price), 4)
+    return {"price": float(price), "prev": float(prev), "change_pct": (price / prev - 1) * 100,
+            "spark": spark, "as_of": as_of, "live": live, "delay": int(delay)}
 
 
 def position_history(ticker: str, start: date) -> pd.DataFrame:

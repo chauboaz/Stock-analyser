@@ -1,42 +1,38 @@
 """Colour themes, applied live by rewriting Streamlit's theme config and rerunning."""
-import json
-
 import streamlit as st
 from streamlit import config
 
-from .portfolio import DATA_DIR
-
-SETTINGS_FILE = DATA_DIR / "settings.json"
+from . import settings
 
 THEMES = {
-    "☀️ Light": dict(base="light", primaryColor="#2563eb", backgroundColor="#ffffff",
-                     secondaryBackgroundColor="#f1f4f9", textColor="#1f2937", font="sans-serif",
-                     sidebar_bg="#f6f8fb"),
-    "🌙 Dark": dict(base="dark", primaryColor="#60a5fa", backgroundColor="#0e1117",
-                   secondaryBackgroundColor="#1a1f2b", textColor="#e6e8ec", font="sans-serif",
-                   sidebar_bg="#141821"),
-    "🌌 Midnight": dict(base="dark", primaryColor="#38bdf8", backgroundColor="#0b1426",
-                       secondaryBackgroundColor="#14223f", textColor="#dbe7ff", font="sans-serif",
-                       sidebar_bg="#0f1b33"),
-    "📟 Terminal": dict(base="dark", primaryColor="#ffb000", backgroundColor="#000000",
-                       secondaryBackgroundColor="#141414", textColor="#e8e8e8", font="monospace",
-                       sidebar_bg="#0a0a0a", greenColor="#00d26a", redColor="#ff4d4d", baseRadius="none",
-                       metricValueFontSize="1.75rem"),   # monospace digits are wide
-    "🌲 Emerald": dict(base="dark", primaryColor="#34d399", backgroundColor="#0b1a17",
-                      secondaryBackgroundColor="#12302a", textColor="#e3f5ef", font="sans-serif",
-                      sidebar_bg="#0f231f"),
-    "📜 Paper": dict(base="light", primaryColor="#b45309", backgroundColor="#faf7f2",
-                    secondaryBackgroundColor="#efe8dc", textColor="#2d2a26", font="serif",
-                    sidebar_bg="#f3eee5"),
-    "🌸 Rose": dict(base="light", primaryColor="#e11d48", backgroundColor="#fff8f9",
-                   secondaryBackgroundColor="#fde7ec", textColor="#3b0a17", font="sans-serif",
-                   sidebar_bg="#fff0f3", baseRadius="large"),
+    "Light": dict(base="light", primaryColor="#2563eb", backgroundColor="#ffffff",
+                  secondaryBackgroundColor="#f4f6fa", textColor="#0f172a", font="sans-serif",
+                  sidebar_bg="#f8fafc", borderColor="#e5e7eb"),
+    "Dark": dict(base="dark", primaryColor="#60a5fa", backgroundColor="#0e1117",
+                 secondaryBackgroundColor="#1a1f2b", textColor="#e6e8ec", font="sans-serif",
+                 sidebar_bg="#141821"),
+    "Midnight": dict(base="dark", primaryColor="#38bdf8", backgroundColor="#0b1426",
+                     secondaryBackgroundColor="#14223f", textColor="#dbe7ff", font="sans-serif",
+                     sidebar_bg="#0f1b33"),
+    "Terminal": dict(base="dark", primaryColor="#ffb000", backgroundColor="#000000",
+                     secondaryBackgroundColor="#141414", textColor="#e8e8e8", font="monospace",
+                     sidebar_bg="#0a0a0a", greenColor="#00d26a", redColor="#ff4d4d", baseRadius="none",
+                     metricValueFontSize="1.75rem"),   # monospace digits are wide
+    "Emerald": dict(base="dark", primaryColor="#34d399", backgroundColor="#0b1a17",
+                    secondaryBackgroundColor="#12302a", textColor="#e3f5ef", font="sans-serif",
+                    sidebar_bg="#0f231f"),
+    "Paper": dict(base="light", primaryColor="#b45309", backgroundColor="#faf7f2",
+                  secondaryBackgroundColor="#efe8dc", textColor="#2d2a26", font="serif",
+                  sidebar_bg="#f3eee5"),
+    "Rose": dict(base="light", primaryColor="#e11d48", backgroundColor="#fff8f9",
+                 secondaryBackgroundColor="#fde7ec", textColor="#3b0a17", font="sans-serif",
+                 sidebar_bg="#fff0f3", baseRadius="large"),
 }
-DEFAULT_THEME = "🌙 Dark"
+DEFAULT_THEME = "Dark"
 
 # every option any theme sets - reset to None when a theme doesn't use it
 _KEYS = ["base", "primaryColor", "backgroundColor", "secondaryBackgroundColor", "textColor", "font",
-         "greenColor", "redColor", "baseRadius", "metricValueFontSize"]
+         "greenColor", "redColor", "baseRadius", "metricValueFontSize", "borderColor"]
 
 
 def _options(name: str) -> dict:
@@ -47,21 +43,10 @@ def _options(name: str) -> dict:
 
 
 def saved_theme() -> str:
-    try:
-        name = json.loads(SETTINGS_FILE.read_text(encoding="utf-8")).get("theme")
-    except (FileNotFoundError, json.JSONDecodeError):
-        name = None
+    name = settings.get("theme")
+    if name and name not in THEMES:          # older saves used emoji names, e.g. "☀️ Light"
+        name = name.split()[-1]
     return name if name in THEMES else DEFAULT_THEME
-
-
-def _save_theme(name: str) -> None:
-    SETTINGS_FILE.parent.mkdir(exist_ok=True)
-    try:
-        settings = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        settings = {}
-    settings["theme"] = name
-    SETTINGS_FILE.write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
 
 def apply(name: str) -> None:
@@ -82,7 +67,7 @@ def picker() -> str:
     """Sidebar theme selector. Returns the active theme name."""
     if "theme" not in st.session_state:
         st.session_state.theme = saved_theme()
-    name = st.selectbox("🎨 Theme", list(THEMES), key="theme",
-                        on_change=lambda: _save_theme(st.session_state.theme))
+    name = st.selectbox("Theme", list(THEMES), key="theme",
+                        on_change=lambda: settings.put("theme", st.session_state.theme))
     apply(name)
     return name

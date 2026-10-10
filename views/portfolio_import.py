@@ -17,7 +17,7 @@ def key_setup() -> bool:
     """Show API key status / entry. Returns True when a key is available."""
     source = credentials.key_source()
     if source:
-        with st.expander(f"🔑 Anthropic API key: using {source}"):
+        with st.expander(f"Anthropic API key: using {source}", icon=":material/key:"):
             st.caption("Screenshots are sent to Anthropic's API (model: Claude Opus 5) to read them; "
                        "each scan typically costs a few cents.")
             if source == "saved key" and st.button("Forget saved key", key="imp_forget"):
@@ -31,7 +31,7 @@ def key_setup() -> bool:
     key = c1.text_input("API key", type="password", placeholder="sk-ant-...", key="imp_key_input")
     if c2.button("Save key", type="primary", disabled=not key, width="stretch"):
         credentials.save_key(key)
-        st.toast("Key saved", icon="🔑")
+        st.toast("Key saved", icon=":material/key:")
         st.rerun()
     st.caption(f"Saved to {credentials.KEY_FILE} (your Windows user folder, outside OneDrive). "
                "Or set the ANTHROPIC_API_KEY environment variable instead.")
@@ -106,7 +106,7 @@ def build_holding(row: pd.Series, base: str) -> tuple[dict | None, str | None]:
 
 
 def render(pf: dict, base: str) -> None:
-    st.markdown("**📸 Import holdings from screenshots**")
+    st.markdown("**Import holdings from screenshots**")
     st.caption("Upload screenshots of your holdings from Sharesies, Hatch, Stake, CommSec, a crypto exchange "
                "or anywhere else. Claude reads them, you check the results, then add them in one go.")
     if not key_setup():
@@ -123,7 +123,7 @@ def render(pf: dict, base: str) -> None:
     images = [f.getvalue() for f in files]
     digest = hashlib.sha256(b"".join(images)).hexdigest()
     if st.session_state.get("imp_digest") != digest:
-        if not st.button(f"🔍 Scan {len(files)} screenshot{'s' if len(files) > 1 else ''}", type="primary"):
+        if not st.button(f"Scan {len(files)} screenshot{'s' if len(files) > 1 else ''}", type="primary"):
             return
         try:
             with st.spinner("Claude is reading your screenshots... (usually 10–40 seconds)"):
@@ -162,7 +162,7 @@ def render(pf: dict, base: str) -> None:
                + (f" in your **{broker}** screenshot" if broker else "") + ". Check them below — you can edit "
                "any cell, untick rows to skip them, and add purchase dates if you know them.")
     for w in st.session_state.get("imp_warnings", []):
-        st.warning(w, icon="⚠️")
+        st.warning(w, icon=":material/warning:")
 
     edited = st.data_editor(
         pd.DataFrame(rows), hide_index=True, width="stretch", key=f"imp_editor_{digest[:8]}",
@@ -187,7 +187,7 @@ def render(pf: dict, base: str) -> None:
 
     chosen = edited[edited["Add"]]
     c1, c2 = st.columns([1, 4])
-    if c1.button(f"＋ Add {len(chosen)} holding{'s' if len(chosen) != 1 else ''}", type="primary",
+    if c1.button(f"Add {len(chosen)} holding{'s' if len(chosen) != 1 else ''}", type="primary",
                  disabled=chosen.empty):
         new, errors = [], []
         with st.spinner("Adding..."):
@@ -204,8 +204,8 @@ def render(pf: dict, base: str) -> None:
         pfm.save(pf)
         for k in [k for k in st.session_state if str(k).startswith("imp_") and k != "imp_key_input"]:
             del st.session_state[k]
-        st.session_state.pf_view_request = "📋 Holdings"
-        st.toast(f"Added {len(new)} holdings from your screenshots", icon="✅")
+        st.session_state.pf_view_request = "Holdings"
+        st.toast(f"Added {len(new)} holdings from your screenshots", icon=":material/check_circle:")
         st.rerun()
     if c2.button("Start over", key="imp_reset"):
         for k in [k for k in st.session_state if str(k).startswith("imp_")]:
