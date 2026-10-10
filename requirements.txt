@@ -1,0 +1,7 @@
+streamlit>=1.40
+yfinance>=0.2.50
+plotly>=5.20
+pandas>=2.2
+numpy>=1.26
+matplotlib>=3.8
+anthropic>=1.11
